@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: gc-marathon-spin
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4
+    envVars:
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REFRESH_TOKEN
+        sync: false
+      - key: MASTER_SHEET_ID
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

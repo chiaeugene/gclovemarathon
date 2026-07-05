@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GC 520 Marathon — Spin Wheel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+</head>
+<body>
+<img src="runner.png" class="hero-runner" alt="">
+<header>
+  <div class="brand">
+    <div class="brand-mark">GC</div>
+    <div class="brand-text">
+      <div class="brand-eyebrow">520 Love Deal <span class="dot">&middot;</span> Run For Love</div>
+      <h1>Marathon <span class="grad">Spin</span></h1>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span id="syncedAt" class="synced-at">not synced yet</span>
+    <button id="btnSync" class="btn btn-secondary">↻&nbsp;Sync</button>
+    <button id="btnExport" class="btn btn-secondary">⬆&nbsp;Export</button>
+    <button id="btnPrizes" class="btn btn-secondary">🎁&nbsp;Prizes</button>
+    <button id="btnEditSpins" class="btn btn-secondary">📝&nbsp;Edit Spins</button>
+    <button id="btnReset" class="btn btn-warn">⟲&nbsp;Reset</button>
+  </div>
+</header>
+
+<main>
+  <aside class="sidebar">
+    <input id="search" type="text" placeholder="Search name...">
+    <div id="participantList" class="participant-list"></div>
+  </aside>
+
+  <section class="stage">
+    <div class="selected-panel" id="selectedPanel">
+      <div class="selected-empty">Select a participant from the left to begin.</div>
+    </div>
+
+    <div class="wheel-area">
+      <div class="wheel-tabs">
+        <button class="tab-btn active" data-wheel="normal">Normal Wheel</button>
+        <button class="tab-btn" data-wheel="special">Special Wheel</button>
+      </div>
+      <div class="wheel-wrap">
+        <div class="wheel-glow"></div>
+        <div id="lightRing" class="light-ring"></div>
+        <div class="pointer"></div>
+        <canvas id="wheelCanvas" width="460" height="460"></canvas>
+        <div class="hub">SPIN</div>
+      </div>
+      <div class="result-banner" id="resultBanner"></div>
+      <div class="controls">
+        <button id="btnSpin" class="btn btn-primary" disabled>SPIN</button>
+        <button id="btnAuto" class="btn btn-primary" disabled>Auto-Play Remaining</button>
+        <button id="btnUndo" class="btn btn-warn" disabled>Undo Last</button>
+        <label class="fast-toggle"><input type="checkbox" id="fastMode"> Fast mode</label>
+      </div>
+    </div>
+
+    <div class="log-panel">
+      <h3>Session Log</h3>
+      <div id="logList" class="log-list"></div>
+    </div>
+  </section>
+</main>
+
+<div id="prizeModal" class="modal hidden">
+  <div class="modal-box">
+    <h2>Manage Prizes</h2>
+    <div class="prize-cols">
+      <div class="prize-col">
+        <h3>Normal Wheel</h3>
+        <div id="prizeListNormal" class="prize-edit-list"></div>
+        <button class="btn btn-secondary" data-add="normal">+ Add Prize</button>
+      </div>
+      <div class="prize-col">
+        <h3>Special Wheel</h3>
+        <div id="prizeListSpecial" class="prize-edit-list"></div>
+        <button class="btn btn-secondary" data-add="special">+ Add Prize</button>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="btnSavePrizes" class="btn btn-primary">Save</button>
+      <button id="btnClosePrizes" class="btn btn-secondary">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="spinsModal" class="modal hidden">
+  <div class="modal-box modal-wide">
+    <h2>Edit Spins</h2>
+    <p class="modal-hint">
+      This overrides the roster manually — great for last-minute changes. It does not
+      touch the Google Sheet. If you click "Sync" again later, the Sheet's numbers will
+      replace these for anyone whose row here matches a NO. in the Sheet.
+    </p>
+    <div class="spins-table-wrap">
+      <table class="spins-table">
+        <thead>
+          <tr><th>NO.</th><th>Name</th><th>Normal Spins</th><th>Special Spins</th><th></th></tr>
+        </thead>
+        <tbody id="spinsTableBody"></tbody>
+      </table>
+    </div>
+    <button id="btnAddParticipant" class="btn btn-secondary">+ Add Participant</button>
+    <div class="modal-actions">
+      <button id="btnSaveSpins" class="btn btn-primary">Save</button>
+      <button id="btnCloseSpins" class="btn btn-secondary">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="resetModal" class="modal hidden">
+  <div class="modal-box modal-narrow">
+    <h2>Reset Event</h2>
+    <p class="modal-hint">
+      This gives every participant their spins back, restores prize quantities to the
+      full stock from the last time you saved Manage Prizes, and clears the session log.
+      Use this to test the flow, then reset before the real event starts.
+    </p>
+    <input id="resetPassword" type="password" placeholder="Admin password" class="modal-input">
+    <div id="resetError" class="modal-error hidden"></div>
+    <div class="modal-actions">
+      <button id="btnConfirmReset" class="btn btn-warn">Yes, Reset Everything</button>
+      <button id="btnCancelReset" class="btn btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="confettiLayer"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
