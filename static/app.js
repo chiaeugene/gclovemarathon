@@ -7,6 +7,7 @@ let prizesCache = { normal: [], special: [] };
 let results = [];
 let specialData = { gifts: [], awarded: [] }; // special wheel = a shared raffle, not per-person spins
 let specialPool = []; // one ticket per remaining special spin, computed server-side
+let raffles = {}; // generic named raffles (e.g. "graduation"): { id: {label, gifts, roster, awarded, pool} }
 let selectedNo = null;
 let currentWheel = "normal";
 let spinning = false;
@@ -16,6 +17,9 @@ let lastPool = []; // pool used for the most recent draw, so we can map result -
 
 const el = (id) => document.getElementById(id);
 const canvas = () => el("wheelCanvas");
+
+// Any wheel tab that isn't "normal" or "special" is a generic named raffle.
+function isGenericRaffle(wheel) { return wheel !== "normal" && wheel !== "special"; }
 
 let toastTimer = null;
 function showToast(msg, isError) {
@@ -43,6 +47,7 @@ async function loadState() {
   results = data.results || [];
   specialData = data.special || { gifts: [], awarded: [] };
   specialPool = data.specialPool || [];
+  raffles = data.raffles || {};
   el("syncedAt").textContent = data.state.last_synced
     ? `synced ${new Date(data.state.last_synced).toLocaleTimeString()}`
     : "not synced yet";
@@ -101,21 +106,17 @@ function updateSelectedPanel() {
   const panel = el("selectedPanel");
 
   if (currentWheel === "special") {
-    const total = specialData.gifts.length;
-    const done = specialData.awarded.length;
-    if (total === 0) {
-      panel.innerHTML = `<div class="selected-empty">No special gifts configured yet — add some via Manage Prizes.</div>`;
-    } else if (done >= total) {
-      panel.innerHTML = `<div class="selected-name">🎉 All special gifts have been awarded!</div>`;
-    } else {
-      panel.innerHTML = `
-        <div class="selected-name">Special Raffle — Gift ${done + 1} of ${total}</div>
-        <div class="selected-sub">${specialData.gifts[done]}</div>`;
+    renderRafflePanel(panel, { ...specialData, label: "Special Raffle" }, specialPool, "No special gifts configured yet — add some via Manage Prizes.");
+    return;
+  }
+  if (isGenericRaffle(currentWheel)) {
+    const r = raffles[currentWheel];
+    if (!r) {
+      panel.innerHTML = `<div class="selected-empty">This raffle isn't set up yet.</div>`;
+      el("btnSpin").disabled = true; el("btnAuto").disabled = true; el("btnUndo").disabled = true;
+      return;
     }
-    const canDraw = total > 0 && done < total && specialPool.length > 0;
-    el("btnSpin").disabled = !canDraw || spinning;
-    el("btnAuto").disabled = !canDraw || spinning;
-    el("btnUndo").disabled = specialData.awarded.length === 0 || spinning;
+    renderRafflePanel(panel, r, r.pool, `No gifts configured yet for ${r.label} — add some via its manager.`);
     return;
   }
 
@@ -137,6 +138,27 @@ function updateSelectedPanel() {
   el("btnUndo").disabled = !hasHistory(p.no) || spinning;
 }
 
+// Shared by the special wheel and every generic named raffle — same shape:
+// {label?, gifts, awarded}, plus its current ticket pool.
+function renderRafflePanel(panel, raffleObj, pool, emptyMsg) {
+  const total = raffleObj.gifts.length;
+  const done = raffleObj.awarded.length;
+  const label = raffleObj.label ? `${raffleObj.label} — ` : "";
+  if (total === 0) {
+    panel.innerHTML = `<div class="selected-empty">${emptyMsg}</div>`;
+  } else if (done >= total) {
+    panel.innerHTML = `<div class="selected-name">🎉 All ${raffleObj.label ? raffleObj.label + " " : ""}gifts have been awarded!</div>`;
+  } else {
+    panel.innerHTML = `
+      <div class="selected-name">${label}Gift ${done + 1} of ${total}</div>
+      <div class="selected-sub">${raffleObj.gifts[done]}</div>`;
+  }
+  const canDraw = total > 0 && done < total && pool.length > 0;
+  el("btnSpin").disabled = !canDraw || spinning;
+  el("btnAuto").disabled = !canDraw || spinning;
+  el("btnUndo").disabled = done === 0 || spinning;
+}
+
 function hasHistory(no) {
   return results.some(r => r.no === no);
 }
@@ -144,19 +166,23 @@ function hasHistory(no) {
 function updateTabs() {
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.wheel === currentWheel);
+    const wheel = btn.dataset.wheel;
+    if (wheel === "normal") return;
+    if (wheel === "special") { btn.disabled = !specialData.gifts || specialData.gifts.length === 0; return; }
+    const r = raffles[wheel];
+    btn.disabled = !r || !r.gifts || r.gifts.length === 0;
   });
-  const specialBtn = document.querySelector('.tab-btn[data-wheel="special"]');
-  specialBtn.disabled = !specialData.gifts || specialData.gifts.length === 0;
 
-  el("btnSpin").textContent = currentWheel === "special" ? "DRAW WINNER" : "SPIN";
+  el("btnSpin").textContent = currentWheel === "normal" ? "SPIN" : "DRAW WINNER";
   if (!autoPlaying) {
-    el("btnAuto").textContent = currentWheel === "special" ? "Draw All Remaining" : "Auto-Play Remaining";
+    el("btnAuto").textContent = currentWheel === "normal" ? "Auto-Play Remaining" : "Draw All Remaining";
   }
 }
 
 function computePool(wheel) {
+  if (wheel === "normal") return (prizesCache.normal || []).filter(p => p.qty > 0);
   if (wheel === "special") return specialPool;
-  return (prizesCache[wheel] || []).filter(p => p.qty > 0);
+  return raffles[wheel] ? raffles[wheel].pool : [];
 }
 
 // ---------------------------------------------------------------- canvas --
@@ -170,7 +196,7 @@ function drawWheel(pool, resetRotation) {
     ctx.fillStyle = "#241f33";
     ctx.beginPath(); ctx.arc(w/2, h/2, r, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = "#a8a3c2"; ctx.font = "bold 18px 'Space Grotesk', Arial"; ctx.textAlign = "center";
-    ctx.fillText(currentWheel === "special" ? "No one left" : "No prizes left", w/2, h/2);
+    ctx.fillText(currentWheel === "normal" ? "No prizes left" : "No one left", w/2, h/2);
   } else {
     const n = pool.length;
     const wedge = (Math.PI * 2) / n;
@@ -232,7 +258,7 @@ function spinToIndex(index, n, fast) {
   return duration;
 }
 
-// helper shared by doSpin/doSpecialDraw — keeps the scroll position from
+// helper shared by every spin/draw flow — keeps the scroll position from
 // jumping around while a spin animates (see notes further down).
 function makeScrollPin() {
   const stageEl = document.querySelector(".stage");
@@ -427,18 +453,111 @@ async function doSpecialUndo() {
   drawWheel(computePool("special"), true);
 }
 
+// -------------------------------------------------- generic named raffles --
+// Same mechanic as the special wheel, but for any raffle the server knows
+// about (e.g. "graduation"), driven purely by its id via /api/raffle-*.
+async function doRaffleDraw(wheelId) {
+  if (spinning) return;
+  const r = raffles[wheelId];
+  if (!r || r.awarded.length >= r.gifts.length) return;
+
+  const pinScroll = makeScrollPin();
+  const pool = r.pool.slice();
+  if (pool.length === 0) { showToast("No one left in this draw.", true); return; }
+  drawWheel(pool, false);
+
+  spinning = true;
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  el("btnSpin").disabled = true;
+  el("btnAuto").disabled = true;
+  el("resultBanner").textContent = "";
+  el("resultBanner").classList.remove("pop");
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+
+  let resp;
+  try {
+    resp = await api("/api/raffle-draw", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raffle: wheelId }),
+    });
+  } catch (e) {
+    showToast(e.message, true);
+    spinning = false;
+    updateSelectedPanel();
+    return;
+  }
+
+  const idx = pool.findIndex(t => t.name === resp.result.name);
+  const fast = el("fastMode").checked;
+  const duration = spinToIndex(idx < 0 ? 0 : idx, pool.length, fast);
+  await new Promise(res => setTimeout(res, duration + 150));
+
+  raffles[wheelId] = { ...resp.raffle, pool: resp.pool };
+
+  el("resultBanner").textContent = `🎉 ${resp.result.name} wins: ${resp.result.gift}!`;
+  el("resultBanner").classList.add("pop");
+  fireConfetti();
+
+  renderLog();
+  updateSelectedPanel();
+  drawWheel(computePool(wheelId), false); // redraw shrunk pool, keep current angle (no jump)
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+
+  spinning = false;
+  updateSelectedPanel();
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+}
+
+async function doRaffleAutoPlay(wheelId) {
+  if (autoPlaying) { autoPlaying = false; return; } // second click = stop
+  autoPlaying = true;
+  el("btnAuto").textContent = "Stop";
+
+  while (autoPlaying) {
+    const r = raffles[wheelId];
+    if (!r || r.awarded.length >= r.gifts.length) break;
+    if (r.pool.length === 0) break;
+    await doRaffleDraw(wheelId);
+    await new Promise(res => setTimeout(res, el("fastMode").checked ? 300 : 900));
+  }
+  autoPlaying = false;
+  updateTabs();
+  updateSelectedPanel();
+}
+
+async function doRaffleUndo(wheelId) {
+  if (spinning) return;
+  try {
+    const resp = await api("/api/raffle-undo", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raffle: wheelId }),
+    });
+    raffles[wheelId] = { ...resp.raffle, pool: resp.pool };
+  } catch (e) { showToast(e.message, true); return; }
+  renderLog();
+  updateSelectedPanel();
+  drawWheel(computePool(wheelId), true);
+}
+
 function renderLog() {
   const box = el("logList");
   box.innerHTML = "";
+  const raffleEntries = Object.entries(raffles).flatMap(([id, r]) =>
+    r.awarded.map(a => ({ ts: a.ts, no: null, name: a.name, label: a.gift, wheel: id, tag: r.label || id })));
   const merged = [
-    ...results.map(r => ({ ts: r.ts, no: r.no, name: r.name, label: r.prize_name, wheel: r.wheel })),
-    ...specialData.awarded.map(a => ({ ts: a.ts, no: a.no, name: a.name, label: a.gift, wheel: "special" })),
+    ...results.map(r => ({ ts: r.ts, no: r.no, name: r.name, label: r.prize_name, wheel: r.wheel, tag: r.wheel })),
+    ...specialData.awarded.map(a => ({ ts: a.ts, no: a.no, name: a.name, label: a.gift, wheel: "special", tag: "special" })),
+    ...raffleEntries,
   ].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
   merged.slice(0, 60).forEach(r => {
     const row = document.createElement("div");
     row.className = "log-row";
-    row.innerHTML = `<span>#${r.no} ${r.name} — ${r.label}</span>
-      <span class="log-tag ${r.wheel === "special" ? "special" : ""}">${r.wheel}</span>`;
+    const namePart = r.no != null ? `#${r.no} ${r.name}` : r.name;
+    row.innerHTML = `<span>${namePart} — ${r.label}</span>
+      <span class="log-tag ${r.wheel !== "normal" ? "special" : ""}">${r.tag}</span>`;
     box.appendChild(row);
   });
 }
@@ -567,7 +686,7 @@ async function confirmReset() {
   closeResetModal();
   selectedNo = null;
   await loadState();
-  showToast("Event reset — everyone has their spins back, prizes are fully stocked, and the special raffle starts fresh.");
+  showToast("Event reset — everyone has their spins back, prizes are fully stocked, and every raffle starts fresh.");
 }
 
 // ------------------------------------------------------------ edit spins --
@@ -628,6 +747,89 @@ async function saveSpins() {
   showToast("Roster updated.");
 }
 
+// ------------------------------------------------------- graduation reward --
+let graduationRosterDraft = [];
+let graduationGiftsDraft = [];
+
+function openGraduationModal() {
+  const r = raffles.graduation || { label: "Graduation Reward", gifts: [], roster: [] };
+  graduationRosterDraft = r.roster.map(x => ({ ...x }));
+  graduationGiftsDraft = [...r.gifts];
+  renderGraduationRoster();
+  renderGraduationGifts();
+  el("graduationModal").classList.remove("hidden");
+}
+function closeGraduationModal() { el("graduationModal").classList.add("hidden"); }
+
+function renderGraduationRoster() {
+  const body = el("graduationRosterBody");
+  body.innerHTML = "";
+  graduationRosterDraft.forEach((p, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="text" value="${p.name}" data-field="name" data-idx="${i}"></td>
+      <td><input type="number" min="1" value="${p.tickets}" data-field="tickets" data-idx="${i}"></td>
+      <td><button class="row-remove" data-remove-idx="${i}">✕</button></td>`;
+    body.appendChild(tr);
+  });
+}
+
+function collectGraduationRoster() {
+  document.querySelectorAll("#graduationRosterBody input").forEach(inp => {
+    const idx = +inp.dataset.idx, field = inp.dataset.field;
+    if (field === "name") graduationRosterDraft[idx].name = inp.value;
+    else graduationRosterDraft[idx][field] = Math.max(1, parseInt(inp.value) || 1);
+  });
+}
+
+function addGraduateRow() {
+  collectGraduationRoster();
+  graduationRosterDraft.push({ name: "New Person", tickets: 1 });
+  renderGraduationRoster();
+}
+
+function renderGraduationGifts() {
+  const box = el("graduationGiftsList");
+  box.innerHTML = "";
+  graduationGiftsDraft.forEach((g, i) => {
+    const row = document.createElement("div");
+    row.className = "prize-edit-row";
+    row.innerHTML = `
+      <input type="text" value="${g}" data-grad-gift-idx="${i}">
+      <button data-remove-grad-gift="${i}">✕</button>`;
+    box.appendChild(row);
+  });
+}
+
+function collectGraduationGifts() {
+  document.querySelectorAll("#graduationGiftsList input[data-grad-gift-idx]").forEach(inp => {
+    graduationGiftsDraft[+inp.dataset.gradGiftIdx] = inp.value;
+  });
+}
+
+function addGraduationGiftRow() {
+  collectGraduationGifts();
+  graduationGiftsDraft.push("New Gift");
+  renderGraduationGifts();
+}
+
+async function saveGraduation() {
+  collectGraduationRoster();
+  collectGraduationGifts();
+  try {
+    const resp = await api("/api/raffle-roster", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ raffle: "graduation", label: "Graduation Reward", gifts: graduationGiftsDraft, roster: graduationRosterDraft }),
+    });
+    raffles.graduation = resp;
+  } catch (e) { showToast(e.message, true); return; }
+  closeGraduationModal();
+  updateTabs();
+  updateSelectedPanel();
+  if (currentWheel === "graduation") drawWheel(computePool("graduation"), true);
+  showToast("Graduation Reward updated.");
+}
+
 // ------------------------------------------------------------------ init --
 function buildLightRing() {
   const ring = el("lightRing");
@@ -663,9 +865,21 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  el("btnSpin").addEventListener("click", () => currentWheel === "special" ? doSpecialDraw() : doSpin());
-  el("btnAuto").addEventListener("click", () => currentWheel === "special" ? doSpecialAutoPlay() : doAutoPlay());
-  el("btnUndo").addEventListener("click", () => currentWheel === "special" ? doSpecialUndo() : doUndo());
+  el("btnSpin").addEventListener("click", () => {
+    if (currentWheel === "normal") doSpin();
+    else if (currentWheel === "special") doSpecialDraw();
+    else doRaffleDraw(currentWheel);
+  });
+  el("btnAuto").addEventListener("click", () => {
+    if (currentWheel === "normal") doAutoPlay();
+    else if (currentWheel === "special") doSpecialAutoPlay();
+    else doRaffleAutoPlay(currentWheel);
+  });
+  el("btnUndo").addEventListener("click", () => {
+    if (currentWheel === "normal") doUndo();
+    else if (currentWheel === "special") doSpecialUndo();
+    else doRaffleUndo(currentWheel);
+  });
 
   el("btnSync").addEventListener("click", async () => {
     el("btnSync").disabled = true;
@@ -712,6 +926,26 @@ window.addEventListener("DOMContentLoaded", () => {
       collectSpinsDraft();
       spinsDraft.splice(+e.target.dataset.removeIdx, 1);
       renderSpinsTable();
+    }
+  });
+
+  el("btnGraduation").addEventListener("click", openGraduationModal);
+  el("btnCloseGraduation").addEventListener("click", closeGraduationModal);
+  el("btnSaveGraduation").addEventListener("click", saveGraduation);
+  el("btnAddGraduate").addEventListener("click", addGraduateRow);
+  el("btnAddGraduationGift").addEventListener("click", addGraduationGiftRow);
+  el("graduationRosterBody").addEventListener("click", (e) => {
+    if (e.target.dataset.removeIdx !== undefined) {
+      collectGraduationRoster();
+      graduationRosterDraft.splice(+e.target.dataset.removeIdx, 1);
+      renderGraduationRoster();
+    }
+  });
+  el("graduationGiftsList").addEventListener("click", (e) => {
+    if (e.target.dataset.removeGradGift !== undefined) {
+      collectGraduationGifts();
+      graduationGiftsDraft.splice(+e.target.dataset.removeGradGift, 1);
+      renderGraduationGifts();
     }
   });
 

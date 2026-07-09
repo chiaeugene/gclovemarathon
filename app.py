@@ -26,6 +26,7 @@ PRIZES_FILE = os.path.join(BASE, "prizes.json")
 PRIZES_BASELINE_FILE = os.path.join(BASE, "prizes_baseline.json")
 RESULTS_FILE = os.path.join(BASE, "results.json")
 SPECIAL_FILE = os.path.join(BASE, "special.json")
+RAFFLES_FILE = os.path.join(BASE, "raffles.json")
 
 CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
@@ -101,6 +102,46 @@ def compute_special_pool(state=None, special=None):
             pool.extend([{"no": p["no"], "name": p["name"]}] * p["special_total"])
     return pool
 
+# ---------------------------------------------------- generic named raffles --
+# Same raffle mechanic as the special wheel (one ticket per person, winner's
+# whole ticket set removed after winning, gifts awarded in a fixed sequence),
+# but with an independent roster — for one-off draws (e.g. a graduation lucky
+# draw) whose entrants aren't necessarily in the main marathon roster at all.
+def default_raffles():
+    return {
+        "graduation": {
+            "label": "Graduation Reward",
+            "gifts": ["Ampoule Mask", "Ampoule Mask", "Clarity Purple"],
+            "roster": [
+                {"name": "Chang Ee Wei", "tickets": 1},
+                {"name": "Low Chai Ying", "tickets": 1},
+                {"name": "Kerryn Lim", "tickets": 1},
+                {"name": "Chia Wei Ping", "tickets": 1},
+                {"name": "Chloe Chan", "tickets": 1},
+                {"name": "Jasmine Abigail", "tickets": 1},
+            ],
+            "awarded": [],  # [{name, gift, ts}, ...] in draw order
+        },
+    }
+
+def get_raffles():
+    data = load_json(RAFFLES_FILE, default_raffles())
+    for rid, defaults in default_raffles().items():
+        data.setdefault(rid, defaults)
+    for robj in data.values():
+        robj.setdefault("gifts", [])
+        robj.setdefault("roster", [])
+        robj.setdefault("awarded", [])
+    return data
+
+def compute_raffle_pool(raffle):
+    won_names = {a["name"] for a in raffle["awarded"]}
+    pool = []
+    for person in raffle["roster"]:
+        if person["name"] not in won_names:
+            pool.extend([{"name": person["name"]}] * max(1, int(person.get("tickets", 1))))
+    return pool
+
 # ------------------------------------------------------------ google auth --
 def get_token():
     r = requests.post("https://oauth2.googleapis.com/token", data={
@@ -128,7 +169,7 @@ def cloud_backup():
         payload = {
             "state": get_state(), "prizes": get_prizes(),
             "prizes_baseline": get_prizes_baseline(), "results": get_results(),
-            "special": get_special(),
+            "special": get_special(), "raffles": get_raffles(),
         }
         rng = urllib.parse.quote(f"{APP_STATE_TAB}!A1")
         resp = requests.put(
@@ -160,6 +201,7 @@ def cloud_restore_if_empty():
         save_json(PRIZES_BASELINE_FILE, payload.get("prizes_baseline", default_prizes()))
         save_json(RESULTS_FILE, payload.get("results", []))
         save_json(SPECIAL_FILE, payload.get("special", default_special()))
+        save_json(RAFFLES_FILE, payload.get("raffles", default_raffles()))
         print("Restored state from cloud backup.")
     except Exception as e:
         print("cloud_restore_if_empty failed (non-fatal):", e)
@@ -175,6 +217,8 @@ if not os.path.exists(RESULTS_FILE):
     save_json(RESULTS_FILE, [])
 if not os.path.exists(SPECIAL_FILE):
     save_json(SPECIAL_FILE, default_special())
+if not os.path.exists(RAFFLES_FILE):
+    save_json(RAFFLES_FILE, default_raffles())
 
 # ---------------------------------------------------------------- routes --
 @app.route("/")
@@ -228,12 +272,17 @@ def sync():
 @app.route("/api/state", methods=["GET"])
 def api_state():
     special = get_special()
+    raffles = get_raffles()
     return jsonify({
         "state": get_state(),
         "prizes": get_prizes(),
         "results": get_results(),
         "special": special,
         "specialPool": compute_special_pool(special=special),
+        "raffles": {
+            rid: {**robj, "pool": compute_raffle_pool(robj)}
+            for rid, robj in raffles.items()
+        },
     })
 
 @app.route("/api/prizes", methods=["POST"])
@@ -424,6 +473,76 @@ def set_special_gifts():
     cloud_backup()
     return jsonify(special)
 
+# ---------------------------------------------------- generic named raffles --
+@app.route("/api/raffle-draw", methods=["POST"])
+def raffle_draw():
+    body = request.get_json()
+    rid = body.get("raffle")
+    raffles = get_raffles()
+    robj = raffles.get(rid)
+    if not robj:
+        return jsonify({"error": "unknown raffle"}), 404
+    if len(robj["awarded"]) >= len(robj["gifts"]):
+        return jsonify({"error": "All gifts have already been awarded."}), 400
+
+    pool = compute_raffle_pool(robj)
+    if not pool:
+        return jsonify({"error": "No one left in this draw."}), 400
+
+    winner = random.choice(pool)
+    gift = robj["gifts"][len(robj["awarded"])]
+    award = {"name": winner["name"], "gift": gift, "ts": datetime.now().isoformat(timespec="seconds")}
+    robj["awarded"].append(award)
+    save_json(RAFFLES_FILE, raffles)
+    cloud_backup()
+
+    return jsonify({"result": award, "raffle": robj, "pool": compute_raffle_pool(robj)})
+
+@app.route("/api/raffle-undo", methods=["POST"])
+def raffle_undo():
+    body = request.get_json()
+    rid = body.get("raffle")
+    raffles = get_raffles()
+    robj = raffles.get(rid)
+    if not robj:
+        return jsonify({"error": "unknown raffle"}), 404
+    if not robj["awarded"]:
+        return jsonify({"error": "No draws to undo"}), 400
+    undone = robj["awarded"].pop()
+    save_json(RAFFLES_FILE, raffles)
+    cloud_backup()
+    return jsonify({"undone": undone, "raffle": robj, "pool": compute_raffle_pool(robj)})
+
+@app.route("/api/raffle-roster", methods=["POST"])
+def set_raffle_roster():
+    """Admin edits a raffle's label, gift sequence, and roster (name + ticket
+    count). Doesn't touch who's already won — only future draws are affected."""
+    body = request.get_json()
+    rid = body.get("raffle")
+    if not rid:
+        return jsonify({"error": "missing raffle id"}), 400
+    raffles = get_raffles()
+    robj = raffles.get(rid, {"label": rid, "gifts": [], "roster": [], "awarded": []})
+
+    robj["label"] = (body.get("label") or robj["label"]).strip()
+    robj["gifts"] = [g.strip() for g in body.get("gifts", []) if g.strip()]
+    roster = []
+    for row in body.get("roster", []):
+        name = (row.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            tickets = max(1, int(row.get("tickets", 1)))
+        except Exception:
+            tickets = 1
+        roster.append({"name": name, "tickets": tickets})
+    robj["roster"] = roster
+
+    raffles[rid] = robj
+    save_json(RAFFLES_FILE, raffles)
+    cloud_backup()
+    return jsonify({**robj, "pool": compute_raffle_pool(robj)})
+
 @app.route("/api/reset", methods=["POST"])
 def reset_event():
     """Full reset for dry-runs: every participant gets their spins back,
@@ -449,10 +568,16 @@ def reset_event():
     special["awarded"] = []
     save_json(SPECIAL_FILE, special)
 
+    raffles = get_raffles()
+    for robj in raffles.values():
+        robj["awarded"] = []
+    save_json(RAFFLES_FILE, raffles)
+
     cloud_backup()
     return jsonify({
         "state": state, "prizes": get_prizes(), "results": [],
         "special": special, "specialPool": compute_special_pool(state, special),
+        "raffles": {rid: {**robj, "pool": compute_raffle_pool(robj)} for rid, robj in raffles.items()},
     })
 
 @app.route("/api/export", methods=["POST"])
@@ -475,6 +600,9 @@ def export_to_sheet():
     rows = [[r["ts"], r["no"], r["name"], r["wheel"].upper(), r["prize_name"]] for r in results]
     for a in get_special()["awarded"]:
         rows.append([a["ts"], a["no"], a["name"], "SPECIAL RAFFLE", a["gift"]])
+    for rid, robj in get_raffles().items():
+        for a in robj["awarded"]:
+            rows.append([a["ts"], "", a["name"], robj["label"].upper(), a["gift"]])
     requests.post(f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SHEET_ID}/values/"
         f"{urllib.parse.quote('SPIN RESULTS!A2')}:append?valueInputOption=USER_ENTERED&insertDataOption=OVERWRITE",
         headers=H, json={"values": rows})
