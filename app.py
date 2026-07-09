@@ -32,7 +32,6 @@ CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
 REFRESH_TOKEN = os.environ["GOOGLE_REFRESH_TOKEN"]
 MASTER_SHEET_ID = os.environ["MASTER_SHEET_ID"]
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "gc520admin")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 
@@ -50,10 +49,12 @@ def save_json(path, data):
 def default_prizes():
     return {
         "normal": [
-            {"id": "n1", "name": "RM10 Voucher", "qty": 20},
-            {"id": "n2", "name": "RM20 Voucher", "qty": 15},
-            {"id": "n3", "name": "Small Gift", "qty": 20},
-            {"id": "n4", "name": "Try Again", "qty": 999},
+            {"id": "n1", "name": "Ampoule Mask", "qty": 1},
+            {"id": "n2", "name": "HUAT AH", "qty": 3},
+            {"id": "n3", "name": "RM18 Cash", "qty": 3},
+            {"id": "n4", "name": "RM8 Cash", "qty": 5},
+            {"id": "n5", "name": "RM3.88 Cash", "qty": 8},
+            {"id": "n6", "name": "RM38 Cash", "qty": 1},
         ],
         "special": [
             {"id": "s1", "name": "RM50 Voucher", "qty": 5},
@@ -90,6 +91,26 @@ def get_special():
     data.setdefault("awarded", [])
     return data
 
+def interleave_pool(pool, key_fn):
+    """Round-robin the pool so one person's multiple tickets are spread
+    around the wheel instead of sitting in adjacent wedges. Order is a pure
+    function of the input, so it stays stable across repeated computations
+    of the same underlying state (no flicker on redraw)."""
+    groups = {}
+    order = []
+    for item in pool:
+        k = key_fn(item)
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append(item)
+    result = []
+    while any(groups[k] for k in order):
+        for k in order:
+            if groups[k]:
+                result.append(groups[k].pop(0))
+    return result
+
 def compute_special_pool(state=None, special=None):
     """One ticket per remaining special spin, per participant — excludes
     anyone who has already won a gift (their whole ticket set is removed)."""
@@ -100,7 +121,7 @@ def compute_special_pool(state=None, special=None):
     for p in state.get("participants", []):
         if p.get("special_total", 0) > 0 and p["no"] not in won_nos:
             pool.extend([{"no": p["no"], "name": p["name"]}] * p["special_total"])
-    return pool
+    return interleave_pool(pool, lambda item: item["no"])
 
 # ---------------------------------------------------- generic named raffles --
 # Same raffle mechanic as the special wheel (one ticket per person, winner's
@@ -140,7 +161,7 @@ def compute_raffle_pool(raffle):
     for person in raffle["roster"]:
         if person["name"] not in won_names:
             pool.extend([{"name": person["name"]}] * max(1, int(person.get("tickets", 1))))
-    return pool
+    return interleave_pool(pool, lambda item: item["name"])
 
 # ------------------------------------------------------------ google auth --
 def get_token():
@@ -547,12 +568,7 @@ def set_raffle_roster():
 def reset_event():
     """Full reset for dry-runs: every participant gets their spins back,
     prize quantities are restored from the baseline (whatever was last
-    saved in Manage Prizes), and the results log is cleared. Requires the
-    admin password so a stray click during the live event can't wipe it."""
-    body = request.get_json(silent=True) or {}
-    if body.get("password") != ADMIN_PASSWORD:
-        return jsonify({"error": "wrong password"}), 403
-
+    saved in Manage Prizes), and the results log is cleared."""
     state = get_state()
     for p in state.get("participants", []):
         p["normal_used"] = 0

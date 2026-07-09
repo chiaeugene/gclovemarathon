@@ -663,23 +663,18 @@ async function savePrizes() {
 
 // ---------------------------------------------------------- reset event --
 function openResetModal() {
-  el("resetPassword").value = "";
   el("resetError").classList.add("hidden");
   el("resetModal").classList.remove("hidden");
 }
 function closeResetModal() { el("resetModal").classList.add("hidden"); }
 
 async function confirmReset() {
-  const password = el("resetPassword").value;
   const errBox = el("resetError");
   errBox.classList.add("hidden");
   try {
-    await api("/api/reset", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
-    });
+    await api("/api/reset", { method: "POST" });
   } catch (e) {
-    errBox.textContent = e.message === "wrong password" ? "Wrong password — try again." : e.message;
+    errBox.textContent = e.message;
     errBox.classList.remove("hidden");
     return;
   }
