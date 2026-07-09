@@ -25,6 +25,7 @@ STATE_FILE = os.path.join(BASE, "state.json")
 PRIZES_FILE = os.path.join(BASE, "prizes.json")
 PRIZES_BASELINE_FILE = os.path.join(BASE, "prizes_baseline.json")
 RESULTS_FILE = os.path.join(BASE, "results.json")
+SPECIAL_FILE = os.path.join(BASE, "special.json")
 
 CLIENT_ID = os.environ["GOOGLE_CLIENT_ID"]
 CLIENT_SECRET = os.environ["GOOGLE_CLIENT_SECRET"]
@@ -72,6 +73,34 @@ def get_state():
 def get_results():
     return load_json(RESULTS_FILE, [])
 
+def default_special():
+    return {
+        "gifts": [
+            "Dior Lipstick Case + Lipstick",
+            "1 Box MAE Product Worth RM288 (Airblur / Perfector / Clarity / Serum / Hair Shampoo / iReason)",
+            "RM68 Cash Ang Pao",
+        ],
+        "awarded": [],  # [{no, name, gift, ts}, ...] in draw order
+    }
+
+def get_special():
+    data = load_json(SPECIAL_FILE, default_special())
+    data.setdefault("gifts", default_special()["gifts"])
+    data.setdefault("awarded", [])
+    return data
+
+def compute_special_pool(state=None, special=None):
+    """One ticket per remaining special spin, per participant — excludes
+    anyone who has already won a gift (their whole ticket set is removed)."""
+    state = state if state is not None else get_state()
+    special = special if special is not None else get_special()
+    won_nos = {a["no"] for a in special["awarded"]}
+    pool = []
+    for p in state.get("participants", []):
+        if p.get("special_total", 0) > 0 and p["no"] not in won_nos:
+            pool.extend([{"no": p["no"], "name": p["name"]}] * p["special_total"])
+    return pool
+
 # ------------------------------------------------------------ google auth --
 def get_token():
     r = requests.post("https://oauth2.googleapis.com/token", data={
@@ -99,6 +128,7 @@ def cloud_backup():
         payload = {
             "state": get_state(), "prizes": get_prizes(),
             "prizes_baseline": get_prizes_baseline(), "results": get_results(),
+            "special": get_special(),
         }
         rng = urllib.parse.quote(f"{APP_STATE_TAB}!A1")
         requests.post(
@@ -128,6 +158,7 @@ def cloud_restore_if_empty():
         save_json(PRIZES_FILE, payload.get("prizes", default_prizes()))
         save_json(PRIZES_BASELINE_FILE, payload.get("prizes_baseline", default_prizes()))
         save_json(RESULTS_FILE, payload.get("results", []))
+        save_json(SPECIAL_FILE, payload.get("special", default_special()))
         print("Restored state from cloud backup.")
     except Exception as e:
         print("cloud_restore_if_empty failed (non-fatal):", e)
@@ -141,6 +172,8 @@ if not os.path.exists(PRIZES_BASELINE_FILE):
     save_json(PRIZES_BASELINE_FILE, get_prizes())
 if not os.path.exists(RESULTS_FILE):
     save_json(RESULTS_FILE, [])
+if not os.path.exists(SPECIAL_FILE):
+    save_json(SPECIAL_FILE, default_special())
 
 # ---------------------------------------------------------------- routes --
 @app.route("/")
@@ -193,10 +226,13 @@ def sync():
 
 @app.route("/api/state", methods=["GET"])
 def api_state():
+    special = get_special()
     return jsonify({
         "state": get_state(),
         "prizes": get_prizes(),
         "results": get_results(),
+        "special": special,
+        "specialPool": compute_special_pool(special=special),
     })
 
 @app.route("/api/prizes", methods=["POST"])
@@ -248,10 +284,12 @@ def set_participants():
 
 @app.route("/api/spin", methods=["POST"])
 def spin():
+    """Normal wheel only — pick a random prize for the given participant.
+    The special wheel is a separate raffle mechanic (see /api/special-draw)."""
     body = request.get_json()
     no = body.get("no")
-    wheel = body.get("wheel")  # 'normal' or 'special'
-    if wheel not in ("normal", "special"):
+    wheel = body.get("wheel")
+    if wheel != "normal":
         return jsonify({"error": "bad wheel"}), 400
 
     state = get_state()
@@ -324,6 +362,67 @@ def undo():
     cloud_backup()
     return jsonify({"undone": r})
 
+# ------------------------------------------------------ special raffle --
+# The special wheel is a shared raffle, not per-person spins: the wheel is
+# populated with one ticket per remaining special spin (so someone with 2
+# special spins gets 2 tickets), each draw awards the NEXT gift in a fixed
+# sequence to whoever's ticket comes up, and the winner's entire ticket set
+# is then removed — so nobody can win a second special gift.
+@app.route("/api/special-draw", methods=["POST"])
+def special_draw():
+    special = get_special()
+    gifts = special["gifts"]
+    awarded = special["awarded"]
+    if len(awarded) >= len(gifts):
+        return jsonify({"error": "All special gifts have already been awarded."}), 400
+
+    state = get_state()
+    pool = compute_special_pool(state, special)
+    if not pool:
+        return jsonify({"error": "No one left in the special draw."}), 400
+
+    winner = random.choice(pool)
+    gift = gifts[len(awarded)]
+    award = {
+        "no": winner["no"], "name": winner["name"], "gift": gift,
+        "ts": datetime.now().isoformat(timespec="seconds"),
+    }
+    awarded.append(award)
+    save_json(SPECIAL_FILE, special)
+    cloud_backup()
+
+    return jsonify({
+        "result": award,
+        "special": special,
+        "specialPool": compute_special_pool(state, special),
+    })
+
+@app.route("/api/special-undo", methods=["POST"])
+def special_undo():
+    special = get_special()
+    if not special["awarded"]:
+        return jsonify({"error": "No special draws to undo"}), 400
+    undone = special["awarded"].pop()
+    save_json(SPECIAL_FILE, special)
+    cloud_backup()
+    return jsonify({
+        "undone": undone,
+        "special": special,
+        "specialPool": compute_special_pool(special=special),
+    })
+
+@app.route("/api/special-gifts", methods=["POST"])
+def set_special_gifts():
+    """Admin edits the ordered gift list. Changing the list does not touch
+    who has already won — only future draws use the new list."""
+    body = request.get_json()
+    gifts = [g.strip() for g in body.get("gifts", []) if g.strip()]
+    special = get_special()
+    special["gifts"] = gifts
+    save_json(SPECIAL_FILE, special)
+    cloud_backup()
+    return jsonify(special)
+
 @app.route("/api/reset", methods=["POST"])
 def reset_event():
     """Full reset for dry-runs: every participant gets their spins back,
@@ -344,8 +443,16 @@ def reset_event():
     save_json(PRIZES_FILE, json.loads(json.dumps(baseline)))
 
     save_json(RESULTS_FILE, [])
+
+    special = get_special()
+    special["awarded"] = []
+    save_json(SPECIAL_FILE, special)
+
     cloud_backup()
-    return jsonify({"state": state, "prizes": get_prizes(), "results": []})
+    return jsonify({
+        "state": state, "prizes": get_prizes(), "results": [],
+        "special": special, "specialPool": compute_special_pool(state, special),
+    })
 
 @app.route("/api/export", methods=["POST"])
 def export_to_sheet():
@@ -365,6 +472,8 @@ def export_to_sheet():
 
     results = get_results()
     rows = [[r["ts"], r["no"], r["name"], r["wheel"].upper(), r["prize_name"]] for r in results]
+    for a in get_special()["awarded"]:
+        rows.append([a["ts"], a["no"], a["name"], "SPECIAL RAFFLE", a["gift"]])
     requests.post(f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SHEET_ID}/values/"
         f"{urllib.parse.quote('SPIN RESULTS!A2')}:append?valueInputOption=USER_ENTERED&insertDataOption=OVERWRITE",
         headers=H, json={"values": rows})

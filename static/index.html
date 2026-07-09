@@ -79,9 +79,13 @@
         <button class="btn btn-secondary" data-add="normal">+ Add Prize</button>
       </div>
       <div class="prize-col">
-        <h3>Special Wheel</h3>
-        <div id="prizeListSpecial" class="prize-edit-list"></div>
-        <button class="btn btn-secondary" data-add="special">+ Add Prize</button>
+        <h3>Special Gifts (raffle order)</h3>
+        <p class="modal-hint" style="margin-bottom:8px;">
+          The special wheel draws a name, not a prize. Gift 1 goes to whoever's name comes up
+          first, Gift 2 to the second name drawn, and so on.
+        </p>
+        <div id="specialGiftsList" class="prize-edit-list"></div>
+        <button class="btn btn-secondary" id="btnAddGift">+ Add Gift</button>
       </div>
     </div>
     <div class="modal-actions">

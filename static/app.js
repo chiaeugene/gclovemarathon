@@ -5,6 +5,8 @@ const COLORS = ["#ef233c","#8b5cf6","#f472b6","#fb923c","#38bdf8","#34d399","#fb
 let participants = [];
 let prizesCache = { normal: [], special: [] };
 let results = [];
+let specialData = { gifts: [], awarded: [] }; // special wheel = a shared raffle, not per-person spins
+let specialPool = []; // one ticket per remaining special spin, computed server-side
 let selectedNo = null;
 let currentWheel = "normal";
 let spinning = false;
@@ -39,11 +41,14 @@ async function loadState() {
   participants = data.state.participants || [];
   prizesCache = data.prizes || { normal: [], special: [] };
   results = data.results || [];
+  specialData = data.special || { gifts: [], awarded: [] };
+  specialPool = data.specialPool || [];
   el("syncedAt").textContent = data.state.last_synced
     ? `synced ${new Date(data.state.last_synced).toLocaleTimeString()}`
     : "not synced yet";
   renderParticipantList();
   renderLog();
+  updateTabs();
   updateSelectedPanel();
   drawWheel(computePool(currentWheel), true);
 }
@@ -56,21 +61,27 @@ function renderParticipantList() {
   const q = el("search").value.trim().toLowerCase();
   const list = el("participantList");
   list.innerHTML = "";
+  const wonNos = new Set(specialData.awarded.map(a => a.no));
   participants
     .filter(p => p.name.toLowerCase().includes(q))
     .filter(p => p.normal_total > 0 || p.special_total > 0)
     .sort((a, b) => a.no - b.no)
     .forEach(p => {
       const normRem = remaining(p, "normal");
-      const specRem = remaining(p, "special");
+      const specialActive = p.special_total > 0 && !wonNos.has(p.no);
       const row = document.createElement("div");
       row.className = "participant-row" + (p.no === selectedNo ? " selected" : "")
-        + ((normRem <= 0 && specRem <= 0) ? " done" : "");
+        + ((normRem <= 0 && !specialActive) ? " done" : "");
+      const specialBadge = p.special_total > 0
+        ? (wonNos.has(p.no)
+            ? `<span class="badge badge-special">🎁 won a gift</span>`
+            : `<span class="badge badge-special">🎁 ${p.special_total} raffle ticket${p.special_total > 1 ? "s" : ""}</span>`)
+        : "";
       row.innerHTML = `
         <div class="participant-name">#${p.no} ${p.name}</div>
         <div class="participant-badges">
-          <span class="badge badge-normal">${normRem}/${p.normal_total} normal</span>
-          ${p.special_total > 0 ? `<span class="badge badge-special">${specRem}/${p.special_total} special</span>` : ""}
+          ${p.normal_total > 0 ? `<span class="badge badge-normal">${normRem}/${p.normal_total} normal</span>` : ""}
+          ${specialBadge}
         </div>`;
       row.onclick = () => selectParticipant(p.no);
       list.appendChild(row);
@@ -79,20 +90,35 @@ function renderParticipantList() {
 
 function selectParticipant(no) {
   selectedNo = no;
-  const p = participants.find(x => x.no === no);
-  if (p && remaining(p, "normal") <= 0 && remaining(p, "special") > 0) {
-    currentWheel = "special";
-  } else if (p && remaining(p, currentWheel) <= 0 && remaining(p, "normal") > 0) {
-    currentWheel = "normal";
-  }
   renderParticipantList();
-  updateTabs();
   updateSelectedPanel();
-  drawWheel(computePool(currentWheel), true);
+  if (currentWheel === "normal") {
+    drawWheel(computePool(currentWheel), true);
+  }
 }
 
 function updateSelectedPanel() {
   const panel = el("selectedPanel");
+
+  if (currentWheel === "special") {
+    const total = specialData.gifts.length;
+    const done = specialData.awarded.length;
+    if (total === 0) {
+      panel.innerHTML = `<div class="selected-empty">No special gifts configured yet — add some via Manage Prizes.</div>`;
+    } else if (done >= total) {
+      panel.innerHTML = `<div class="selected-name">🎉 All special gifts have been awarded!</div>`;
+    } else {
+      panel.innerHTML = `
+        <div class="selected-name">Special Raffle — Gift ${done + 1} of ${total}</div>
+        <div class="selected-sub">${specialData.gifts[done]}</div>`;
+    }
+    const canDraw = total > 0 && done < total && specialPool.length > 0;
+    el("btnSpin").disabled = !canDraw || spinning;
+    el("btnAuto").disabled = !canDraw || spinning;
+    el("btnUndo").disabled = specialData.awarded.length === 0 || spinning;
+    return;
+  }
+
   const p = participants.find(x => x.no === selectedNo);
   if (!p) {
     panel.innerHTML = `<div class="selected-empty">Select a participant from the left to begin.</div>`;
@@ -119,12 +145,17 @@ function updateTabs() {
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.wheel === currentWheel);
   });
-  const p = participants.find(x => x.no === selectedNo);
   const specialBtn = document.querySelector('.tab-btn[data-wheel="special"]');
-  specialBtn.disabled = !p || p.special_total <= 0;
+  specialBtn.disabled = !specialData.gifts || specialData.gifts.length === 0;
+
+  el("btnSpin").textContent = currentWheel === "special" ? "DRAW WINNER" : "SPIN";
+  if (!autoPlaying) {
+    el("btnAuto").textContent = currentWheel === "special" ? "Draw All Remaining" : "Auto-Play Remaining";
+  }
 }
 
 function computePool(wheel) {
+  if (wheel === "special") return specialPool;
   return (prizesCache[wheel] || []).filter(p => p.qty > 0);
 }
 
@@ -139,7 +170,7 @@ function drawWheel(pool, resetRotation) {
     ctx.fillStyle = "#241f33";
     ctx.beginPath(); ctx.arc(w/2, h/2, r, 0, Math.PI*2); ctx.fill();
     ctx.fillStyle = "#a8a3c2"; ctx.font = "bold 18px 'Space Grotesk', Arial"; ctx.textAlign = "center";
-    ctx.fillText("No prizes left", w/2, h/2);
+    ctx.fillText(currentWheel === "special" ? "No one left" : "No prizes left", w/2, h/2);
   } else {
     const n = pool.length;
     const wedge = (Math.PI * 2) / n;
@@ -201,6 +232,14 @@ function spinToIndex(index, n, fast) {
   return duration;
 }
 
+// helper shared by doSpin/doSpecialDraw — keeps the scroll position from
+// jumping around while a spin animates (see notes further down).
+function makeScrollPin() {
+  const stageEl = document.querySelector(".stage");
+  const lockedScroll = stageEl ? stageEl.scrollTop : 0;
+  return () => { if (stageEl) stageEl.scrollTop = lockedScroll; };
+}
+
 // ------------------------------------------------------------ spin flow --
 async function doSpin() {
   if (spinning || !selectedNo) return;
@@ -211,9 +250,7 @@ async function doSpin() {
   // shifting off a disabled button, list re-renders, etc.) was yanking
   // .stage's scroll to the bottom every time a spin landed, which looked
   // like the wheel "repositioning" itself, especially jarring in auto-play.
-  const stageEl = document.querySelector(".stage");
-  const lockedScroll = stageEl ? stageEl.scrollTop : 0;
-  const pinScroll = () => { if (stageEl) stageEl.scrollTop = lockedScroll; };
+  const pinScroll = makeScrollPin();
 
   const pool = computePool(currentWheel);
   if (pool.length === 0) { showToast("No prizes left in this wheel — add more via Manage Prizes.", true); return; }
@@ -279,10 +316,10 @@ async function doSpin() {
 }
 
 async function doAutoPlay() {
-  if (autoPlaying || !selectedNo) return;
+  if (autoPlaying) { autoPlaying = false; return; } // second click = stop
+  if (!selectedNo) return;
   autoPlaying = true;
   el("btnAuto").textContent = "Stop Auto-Play";
-  el("btnAuto").onclick = () => { autoPlaying = false; };
 
   while (autoPlaying) {
     const p = participants.find(x => x.no === selectedNo);
@@ -292,8 +329,7 @@ async function doAutoPlay() {
     await new Promise(res => setTimeout(res, el("fastMode").checked ? 300 : 900));
   }
   autoPlaying = false;
-  el("btnAuto").textContent = "Auto-Play Remaining";
-  el("btnAuto").onclick = doAutoPlay;
+  updateTabs();
   updateSelectedPanel();
 }
 
@@ -308,13 +344,100 @@ async function doUndo() {
   await loadState();
 }
 
+// -------------------------------------------------------- special raffle --
+async function doSpecialDraw() {
+  if (spinning) return;
+  if (specialData.awarded.length >= specialData.gifts.length) return;
+
+  const pinScroll = makeScrollPin();
+  const pool = specialPool.slice();
+  if (pool.length === 0) { showToast("No one left in the special draw.", true); return; }
+  drawWheel(pool, false);
+
+  spinning = true;
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  el("btnSpin").disabled = true;
+  el("btnAuto").disabled = true;
+  el("resultBanner").textContent = "";
+  el("resultBanner").classList.remove("pop");
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+
+  let resp;
+  try {
+    resp = await api("/api/special-draw", { method: "POST" });
+  } catch (e) {
+    showToast(e.message, true);
+    spinning = false;
+    updateSelectedPanel();
+    return;
+  }
+
+  const idx = pool.findIndex(t => t.no === resp.result.no);
+  const fast = el("fastMode").checked;
+  const duration = spinToIndex(idx < 0 ? 0 : idx, pool.length, fast);
+  await new Promise(res => setTimeout(res, duration + 150));
+
+  specialData = resp.special;
+  specialPool = resp.specialPool;
+
+  el("resultBanner").textContent = `🎉 ${resp.result.name} wins: ${resp.result.gift}!`;
+  el("resultBanner").classList.add("pop");
+  fireConfetti();
+
+  renderParticipantList();
+  renderLog();
+  updateSelectedPanel();
+  drawWheel(computePool("special"), false); // redraw shrunk pool, keep current angle (no jump)
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+
+  spinning = false;
+  updateSelectedPanel();
+  pinScroll();
+  requestAnimationFrame(pinScroll);
+}
+
+async function doSpecialAutoPlay() {
+  if (autoPlaying) { autoPlaying = false; return; } // second click = stop
+  autoPlaying = true;
+  el("btnAuto").textContent = "Stop";
+
+  while (autoPlaying) {
+    if (specialData.awarded.length >= specialData.gifts.length) break;
+    if (specialPool.length === 0) break;
+    await doSpecialDraw();
+    await new Promise(res => setTimeout(res, el("fastMode").checked ? 300 : 900));
+  }
+  autoPlaying = false;
+  updateTabs();
+  updateSelectedPanel();
+}
+
+async function doSpecialUndo() {
+  if (spinning) return;
+  try {
+    const resp = await api("/api/special-undo", { method: "POST" });
+    specialData = resp.special;
+    specialPool = resp.specialPool;
+  } catch (e) { showToast(e.message, true); return; }
+  renderParticipantList();
+  renderLog();
+  updateSelectedPanel();
+  drawWheel(computePool("special"), true);
+}
+
 function renderLog() {
   const box = el("logList");
   box.innerHTML = "";
-  [...results].reverse().slice(0, 60).forEach(r => {
+  const merged = [
+    ...results.map(r => ({ ts: r.ts, no: r.no, name: r.name, label: r.prize_name, wheel: r.wheel })),
+    ...specialData.awarded.map(a => ({ ts: a.ts, no: a.no, name: a.name, label: a.gift, wheel: "special" })),
+  ].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+  merged.slice(0, 60).forEach(r => {
     const row = document.createElement("div");
     row.className = "log-row";
-    row.innerHTML = `<span>#${r.no} ${r.name} — ${r.prize_name}</span>
+    row.innerHTML = `<span>#${r.no} ${r.name} — ${r.label}</span>
       <span class="log-tag ${r.wheel === "special" ? "special" : ""}">${r.wheel}</span>`;
     box.appendChild(row);
   });
@@ -334,15 +457,18 @@ function fireConfetti() {
 }
 
 // --------------------------------------------------------- prize manager --
+let specialGiftsDraft = [];
+
 function openPrizeModal() {
   renderPrizeEditor("normal");
-  renderPrizeEditor("special");
+  specialGiftsDraft = [...specialData.gifts];
+  renderSpecialGiftsEditor();
   el("prizeModal").classList.remove("hidden");
 }
 function closePrizeModal() { el("prizeModal").classList.add("hidden"); }
 
 function renderPrizeEditor(wheel) {
-  const box = el(wheel === "normal" ? "prizeListNormal" : "prizeListSpecial");
+  const box = el("prizeListNormal");
   box.innerHTML = "";
   (prizesCache[wheel] || []).forEach((p, i) => {
     const row = document.createElement("div");
@@ -362,7 +488,7 @@ function addPrizeRow(wheel) {
 }
 
 function collectPrizeEditor() {
-  document.querySelectorAll("#prizeModal input").forEach(inp => {
+  document.querySelectorAll("#prizeModal input[data-wheel]").forEach(inp => {
     const wheel = inp.dataset.wheel, idx = +inp.dataset.idx, field = inp.dataset.field;
     if (!wheel) return;
     if (field === "qty") prizesCache[wheel][idx].qty = Math.max(0, parseInt(inp.value) || 0);
@@ -370,15 +496,50 @@ function collectPrizeEditor() {
   });
 }
 
+function renderSpecialGiftsEditor() {
+  const box = el("specialGiftsList");
+  box.innerHTML = "";
+  specialGiftsDraft.forEach((g, i) => {
+    const row = document.createElement("div");
+    row.className = "prize-edit-row";
+    row.innerHTML = `
+      <input type="text" value="${g}" data-gift-idx="${i}">
+      <button data-remove-gift="${i}">✕</button>`;
+    box.appendChild(row);
+  });
+}
+
+function collectSpecialGiftsDraft() {
+  document.querySelectorAll("#specialGiftsList input[data-gift-idx]").forEach(inp => {
+    specialGiftsDraft[+inp.dataset.giftIdx] = inp.value;
+  });
+}
+
+function addGiftRow() {
+  collectSpecialGiftsDraft();
+  specialGiftsDraft.push("New Gift");
+  renderSpecialGiftsEditor();
+}
+
 async function savePrizes() {
   collectPrizeEditor();
-  await api("/api/prizes", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(prizesCache),
-  });
+  collectSpecialGiftsDraft();
+  try {
+    await api("/api/prizes", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(prizesCache),
+    });
+    const giftsResp = await api("/api/special-gifts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gifts: specialGiftsDraft }),
+    });
+    specialData.gifts = giftsResp.gifts;
+  } catch (e) { showToast(e.message, true); return; }
   closePrizeModal();
-  drawWheel(computePool(currentWheel), true);
+  updateTabs();
   updateSelectedPanel();
+  drawWheel(computePool(currentWheel), true);
+  showToast("Prizes & special gifts updated.");
 }
 
 // ---------------------------------------------------------- reset event --
@@ -406,7 +567,7 @@ async function confirmReset() {
   closeResetModal();
   selectedNo = null;
   await loadState();
-  showToast("Event reset — everyone has their spins back and prizes are fully stocked.");
+  showToast("Event reset — everyone has their spins back, prizes are fully stocked, and the special raffle starts fresh.");
 }
 
 // ------------------------------------------------------------ edit spins --
@@ -502,9 +663,9 @@ window.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  el("btnSpin").addEventListener("click", doSpin);
-  el("btnAuto").addEventListener("click", doAutoPlay);
-  el("btnUndo").addEventListener("click", doUndo);
+  el("btnSpin").addEventListener("click", () => currentWheel === "special" ? doSpecialDraw() : doSpin());
+  el("btnAuto").addEventListener("click", () => currentWheel === "special" ? doSpecialAutoPlay() : doAutoPlay());
+  el("btnUndo").addEventListener("click", () => currentWheel === "special" ? doSpecialUndo() : doUndo());
 
   el("btnSync").addEventListener("click", async () => {
     el("btnSync").disabled = true;
@@ -528,11 +689,17 @@ window.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-add]").forEach(btn => {
     btn.addEventListener("click", () => addPrizeRow(btn.dataset.add));
   });
+  el("btnAddGift").addEventListener("click", addGiftRow);
   el("prizeModal").addEventListener("click", (e) => {
     if (e.target.dataset.remove) {
       const [wheel, idx] = e.target.dataset.remove.split(":");
       prizesCache[wheel].splice(+idx, 1);
       renderPrizeEditor(wheel);
+    }
+    if (e.target.dataset.removeGift !== undefined) {
+      collectSpecialGiftsDraft();
+      specialGiftsDraft.splice(+e.target.dataset.removeGift, 1);
+      renderSpecialGiftsEditor();
     }
   });
 
