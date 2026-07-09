@@ -542,22 +542,41 @@ async function doRaffleUndo(wheelId) {
   drawWheel(computePool(wheelId), true);
 }
 
+// Each wheel keeps its own separate log — switches automatically with the
+// tab. Entries themselves are never deleted by switching tabs or reloading;
+// only Reset clears them (see confirmReset).
+function wheelLogTitle(wheel) {
+  if (wheel === "normal") return "Normal Wheel Log";
+  if (wheel === "special") return "Special Wheel Log";
+  const r = raffles[wheel];
+  return `${r ? r.label : wheel} Log`;
+}
+
 function renderLog() {
   const box = el("logList");
   box.innerHTML = "";
-  const raffleEntries = Object.entries(raffles).flatMap(([id, r]) =>
-    r.awarded.map(a => ({ ts: a.ts, no: null, name: a.name, label: a.gift, wheel: id, tag: r.label || id })));
-  const merged = [
-    ...results.map(r => ({ ts: r.ts, no: r.no, name: r.name, label: r.prize_name, wheel: r.wheel, tag: r.wheel })),
-    ...specialData.awarded.map(a => ({ ts: a.ts, no: a.no, name: a.name, label: a.gift, wheel: "special", tag: "special" })),
-    ...raffleEntries,
-  ].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
-  merged.slice(0, 60).forEach(r => {
+  el("logTitle").textContent = wheelLogTitle(currentWheel);
+
+  let entries;
+  if (currentWheel === "normal") {
+    entries = results.map(r => ({ ts: r.ts, no: r.no, name: r.name, label: r.prize_name }));
+  } else if (currentWheel === "special") {
+    entries = specialData.awarded.map(a => ({ ts: a.ts, no: a.no, name: a.name, label: a.gift }));
+  } else {
+    const r = raffles[currentWheel];
+    entries = r ? r.awarded.map(a => ({ ts: a.ts, no: null, name: a.name, label: a.gift })) : [];
+  }
+  entries = [...entries].sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+
+  if (entries.length === 0) {
+    box.innerHTML = `<div class="log-empty">No draws yet on this wheel.</div>`;
+    return;
+  }
+  entries.slice(0, 100).forEach(r => {
     const row = document.createElement("div");
     row.className = "log-row";
     const namePart = r.no != null ? `#${r.no} ${r.name}` : r.name;
-    row.innerHTML = `<span>${namePart} — ${r.label}</span>
-      <span class="log-tag ${r.wheel !== "normal" ? "special" : ""}">${r.tag}</span>`;
+    row.innerHTML = `<span>${namePart} — ${r.label}</span>`;
     box.appendChild(row);
   });
 }
@@ -856,6 +875,7 @@ window.addEventListener("DOMContentLoaded", () => {
       currentWheel = btn.dataset.wheel;
       updateTabs();
       updateSelectedPanel();
+      renderLog();
       drawWheel(computePool(currentWheel), true);
     });
   });

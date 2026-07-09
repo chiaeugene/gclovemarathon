@@ -168,6 +168,7 @@ main{display:flex;height:calc(100vh - 74px);position:relative;z-index:1;}
 .log-panel h3{margin:0 0 10px;font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:600;color:var(--text);}
 .log-list{max-height:180px;overflow-y:auto;font-size:12.5px;overflow-anchor:none;}
 .log-row{padding:6px 0;border-bottom:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;color:var(--text);}
+.log-empty{padding:10px 0;color:var(--text-dim);font-style:italic;}
 .log-tag{font-size:10px;padding:2px 9px;border-radius:20px;background:rgba(139,92,246,.25);color:#d9c9ff;font-weight:600;}
 .log-tag.special{background:rgba(251,146,60,.25);color:#ffd7ae;}
 
