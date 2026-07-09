@@ -374,13 +374,14 @@ def spin():
         return jsonify({"error": "no spins remaining"}), 400
 
     prizes = get_prizes()
-    pool = [p for p in prizes[wheel] if p["qty"] > 0]
-    if not pool:
-        return jsonify({"error": "no prizes left in this wheel"}), 400
+    pool = prizes[wheel]
+    weights = [max(0, p.get("qty", 0)) for p in pool]
+    if not pool or sum(weights) <= 0:
+        return jsonify({"error": "no prizes configured for this wheel"}), 400
 
-    chosen = random.choice(pool)  # equal probability per remaining prize TYPE
-    chosen["qty"] -= 1
-    save_json(PRIZES_FILE, prizes)
+    # qty is a relative weight here, not depleting stock — the normal wheel
+    # never runs out or loses wedges, unlike the special/raffle wheels.
+    chosen = random.choices(pool, weights=weights, k=1)[0]
 
     participant[used_key] += 1
     save_json(STATE_FILE, state)
@@ -417,13 +418,8 @@ def undo():
     r = results.pop(idx)
     save_json(RESULTS_FILE, results)
 
-    prizes = get_prizes()
-    for p in prizes[r["wheel"]]:
-        if p["id"] == r["prize_id"]:
-            p["qty"] += 1
-            break
-    save_json(PRIZES_FILE, prizes)
-
+    # No prize quantity to restore — normal-wheel qty is a weight, not
+    # depleting stock (see /api/spin), so nothing was decremented.
     state = get_state()
     for p in state["participants"]:
         if p["no"] == no:
