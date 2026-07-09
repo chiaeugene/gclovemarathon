@@ -131,10 +131,11 @@ def cloud_backup():
             "special": get_special(),
         }
         rng = urllib.parse.quote(f"{APP_STATE_TAB}!A1")
-        requests.post(
+        resp = requests.put(
             f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SHEET_ID}/values/{rng}"
             f"?valueInputOption=RAW", headers=H,
             json={"values": [["blob", json.dumps(payload)]]}, timeout=10)
+        resp.raise_for_status()
     except Exception as e:
         print("cloud_backup failed (non-fatal):", e)
 
